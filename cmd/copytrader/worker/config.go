@@ -6,23 +6,21 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
-	"github.com/vultisig/plugin/storage"
+	"github.com/vultisig/verifier/plugin/config"
 	"github.com/vultisig/verifier/vault_config"
 )
 
 type CopytraderWorkerConfig struct {
-	Redis              storage.RedisConfig       `mapstructure:"redis" json:"redis,omitempty"`
+	Redis              config.Redis              `mapstructure:"redis" json:"redis,omitempty"`
 	Rpc                Rpc                       `mapstructure:"Rpc" json:"Rpc,omitempty"`
-	Verifier           verifier                  `mapstructure:"verifier" json:"verifier,omitempty"`
+	Verifier           config.Verifier           `mapstructure:"verifier" json:"verifier,omitempty"`
 	BlockStorage       vault_config.BlockStorage `mapstructure:"block_storage" json:"block_storage,omitempty"`
 	VaultServiceConfig vault_config.Config       `mapstructure:"vault_service" json:"vault_service,omitempty"`
 	Datadog            struct {
 		Host string `mapstructure:"host" json:"host,omitempty"`
 		Port string `mapstructure:"port" json:"port,omitempty"`
 	} `mapstructure:"datadog" json:"datadog"`
-	Database struct {
-		DSN string `mapstructure:"dsn" json:"dsn,omitempty"`
-	} `mapstructure:"database" json:"database,omitempty"`
+	Database config.Database `mapstructure:"database" json:"database,omitempty"`
 }
 
 type Rpc struct {
@@ -30,13 +28,8 @@ type Rpc struct {
 }
 
 type rpcItem struct {
-	URL string `mapstructure:"url" json:"url,omitempty"`
-}
-
-type verifier struct {
-	URL         string `mapstructure:"url"`
-	Token       string `mapstructure:"token"`
-	PartyPrefix string `mapstructure:"party_prefix"`
+	URL       string `mapstructure:"url" json:"url,omitempty"`
+	FromBlock uint64 `mapstructure:"from_block" json:"from_block,omitempty"`
 }
 
 func GetConfigure() (*CopytraderWorkerConfig, error) {

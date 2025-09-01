@@ -5,17 +5,17 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/DataDog/datadog-go/statsd"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
-	"github.com/vultisig/plugin/api"
-	"github.com/vultisig/plugin/storage"
-	"github.com/vultisig/plugin/storage/postgres"
-	"github.com/vultisig/verifier/tx_indexer"
-	tx_indexer_storage "github.com/vultisig/verifier/tx_indexer/pkg/storage"
+	"github.com/vultisig/copytrading/internal/service"
+	"github.com/vultisig/verifier/plugin/redis"
+	"github.com/vultisig/verifier/plugin/server"
+	"github.com/vultisig/verifier/plugin/tx_indexer"
+	"github.com/vultisig/verifier/plugin/tx_indexer/pkg/storage"
 	"github.com/vultisig/verifier/vault"
 
-	"copytrader/internal/plugin"
+	"github.com/vultisig/copytrading/internal/plugin"
+	"github.com/vultisig/copytrading/internal/storage/postgres"
 )
 
 func main() {
@@ -27,11 +27,7 @@ func main() {
 	}
 	logger := logrus.New()
 
-	sdClient, err := statsd.New(net.JoinHostPort(cfg.Datadog.Host, cfg.Datadog.Port))
-	if err != nil {
-		panic(err)
-	}
-	redisStorage, err := storage.NewRedisStorage(cfg.Redis)
+	redisStorage, err := redis.NewRedis(cfg.Redis)
 	if err != nil {
 		panic(err)
 	}
@@ -56,20 +52,25 @@ func main() {
 		panic(err)
 	}
 
-	db, err := postgres.NewPostgresBackend(cfg.Database.DSN, nil)
+	db, err := postgres.NewPostgresBackend(logger, cfg.Database.DSN, nil)
 	if err != nil {
 		logger.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	txIndexerStore, err := tx_indexer_storage.NewPostgresTxIndexStore(ctx, cfg.Database.DSN)
+	txIndexerStore, err := storage.NewPostgresTxIndexStore(ctx, cfg.Database.DSN)
 	if err != nil {
-		panic(fmt.Errorf("tx_indexer_storage.NewPostgresTxIndexStore: %w", err))
+		logger.Fatalf("tx_indexer_storage.NewPostgresTxIndexStore: %s", err)
+	}
+
+	txIndexerChains, err := tx_indexer.Chains()
+	if err != nil {
+		logger.Fatalf("tx_indexer_storage.Chains: %s", err)
 	}
 
 	txIndexerService := tx_indexer.NewService(
 		logger,
 		txIndexerStore,
-		tx_indexer.Chains(),
+		txIndexerChains,
 	)
 
 	ct, err := plugin.NewPlugin(
@@ -80,23 +81,29 @@ func main() {
 		txIndexerService,
 		client,
 		cfg.Server.EncryptionSecret,
+		nil,
+		0,
 	)
 	if err != nil {
 		logger.Fatalf("failed to create copytrader plugin,err: %s", err)
 	}
 
-	server := api.NewServer(
+	policyService, err := service.NewPolicyService(db, nil, logger)
+	if err != nil {
+		logger.Fatalf("failed to create policy service,err: %s", err)
+	}
+
+	srv := server.NewServer(
 		cfg.Server,
-		db,
+		policyService,
 		redisStorage,
 		vaultStorage,
-		redisOptions,
 		client,
 		inspector,
-		sdClient,
 		ct,
+		server.DefaultMiddlewares(),
 	)
-	if err := server.StartServer(); err != nil {
+	if err := srv.Start(ctx); err != nil {
 		panic(err)
 	}
 }

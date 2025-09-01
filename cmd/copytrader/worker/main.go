@@ -8,15 +8,15 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
-	"github.com/vultisig/plugin/storage/postgres"
-	"github.com/vultisig/verifier/tx_indexer"
-	"github.com/vultisig/verifier/tx_indexer/pkg/storage"
+	"github.com/vultisig/verifier/plugin/keysign"
+	"github.com/vultisig/verifier/plugin/tasks"
+	"github.com/vultisig/verifier/plugin/tx_indexer"
+	"github.com/vultisig/verifier/plugin/tx_indexer/pkg/storage"
 	"github.com/vultisig/verifier/vault"
 	"github.com/vultisig/vultiserver/relay"
 
-	"copytrader/internal/keysign"
-	"copytrader/internal/plugin"
-	"copytrader/internal/tasks"
+	"github.com/vultisig/copytrading/internal/plugin"
+	"github.com/vultisig/copytrading/internal/storage/postgres"
 )
 
 func main() {
@@ -61,10 +61,15 @@ func main() {
 		panic(fmt.Errorf("storage.NewPostgresTxIndexStore: %w", err))
 	}
 
+	chains, err := tx_indexer.Chains()
+	if err != nil {
+		panic(fmt.Errorf("tx_indexer.Chains: %w", err))
+	}
+
 	txIndexerService := tx_indexer.NewService(
 		logger,
 		txIndexerStore,
-		tx_indexer.Chains(),
+		chains,
 	)
 
 	vaultService, err := vault.NewManagementService(
@@ -78,7 +83,7 @@ func main() {
 		panic(fmt.Errorf("failed to create vault service: %w", err))
 	}
 
-	postgressDB, err := postgres.NewPostgresBackend(cfg.Database.DSN, nil)
+	postgresDB, err := postgres.NewPostgresBackend(logger, cfg.Database.DSN, nil)
 	if err != nil {
 		panic(fmt.Errorf("failed to create postgres backend: %w", err))
 	}
@@ -89,7 +94,7 @@ func main() {
 	}
 
 	ct, err := plugin.NewPlugin(
-		postgressDB,
+		postgresDB,
 		keysign.NewSigner(
 			logger.WithField("pkg", "keysign.Signer").Logger,
 			relay.NewRelayClient(cfg.VaultServiceConfig.Relay.Server),
@@ -107,10 +112,14 @@ func main() {
 		txIndexerService,
 		client,
 		cfg.VaultServiceConfig.EncryptionSecret,
+		&plugin.WatcherQueue{tasks.QUEUE_NAME, tasks.TypePluginTransaction},
+		cfg.Rpc.Ethereum.FromBlock,
 	)
 	if err != nil {
 		panic(fmt.Errorf("failed to create copytrader plugin: %w", err))
 	}
+
+	go ct.WatchUniswap(ctx)
 
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(tasks.TypePluginTransaction, ct.HandleSwapTask)

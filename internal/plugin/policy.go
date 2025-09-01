@@ -2,17 +2,15 @@ package plugin
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 
-	"github.com/kaptinlin/jsonschema"
-	"github.com/vultisig/recipes/chain"
 	"github.com/vultisig/recipes/engine"
 	rtypes "github.com/vultisig/recipes/types"
+	"github.com/vultisig/verifier/plugin"
 	vtypes "github.com/vultisig/verifier/types"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/vultisig/copytrading/internal/types"
 )
 
 func (p *Plugin) ValidateProposedTransactions(policy vtypes.PluginPolicy, txs []vtypes.PluginKeysignRequest) error {
@@ -30,23 +28,14 @@ func (p *Plugin) ValidateProposedTransactions(policy vtypes.PluginPolicy, txs []
 
 	for _, tx := range txs {
 		for _, keysignMessage := range tx.Messages {
-			messageChain, err := chain.GetChain(strings.ToLower(keysignMessage.Chain.String()))
+			txBytes, err := base64.StdEncoding.DecodeString(keysignMessage.Message)
 			if err != nil {
-				return fmt.Errorf("failed to get chain: %w", err)
+				return fmt.Errorf("failed to decode transaction: %w", err)
 			}
 
-			decodedTx, err := messageChain.ParseTransaction(keysignMessage.Message)
-			if err != nil {
-				return fmt.Errorf("failed to parse transaction: %w", err)
-			}
-
-			transactionAllowed, _, err := eng.Evaluate(recipe, messageChain, decodedTx)
+			_, err = eng.Evaluate(recipe, keysignMessage.Chain, txBytes)
 			if err != nil {
 				return fmt.Errorf("failed to evaluate transaction: %w", err)
-			}
-
-			if !transactionAllowed {
-				return fmt.Errorf("transaction %s on %s not allowed by policy", keysignMessage.Hash, keysignMessage.Chain)
 			}
 		}
 	}
@@ -54,108 +43,86 @@ func (p *Plugin) ValidateProposedTransactions(policy vtypes.PluginPolicy, txs []
 	return nil
 }
 
-func RecipeConfiguration(jsonSchema map[string]any) (*structpb.Struct, error) {
-	b, err := json.Marshal(jsonSchema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal schema: %w", err)
-	}
-
-	_, err = jsonschema.NewCompiler().Compile(b)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile schema: %w", err)
-	}
-
-	pb, err := structpb.NewStruct(jsonSchema)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build pb schema: %w", err)
-	}
-	return pb, nil
-}
-
 func (p *Plugin) ValidatePluginPolicy(policyDoc vtypes.PluginPolicy) error {
 	spec, err := p.GetRecipeSpecification()
 	if err != nil {
 		return err
 	}
-	return validatePluginPolicy(policyDoc, spec)
-}
-
-func validatePluginPolicy(policyDoc vtypes.PluginPolicy, spec *rtypes.RecipeSchema) error {
-	policyBytes, err := base64.StdEncoding.DecodeString(policyDoc.Recipe)
-	if err != nil {
-		return fmt.Errorf("failed to decode policy recipe: %w", err)
-	}
-
-	var rPolicy rtypes.Policy
-	err = proto.Unmarshal(policyBytes, &rPolicy)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal policy: %w", err)
-	}
-
-	err = engine.NewEngine().ValidatePolicyWithSchema(&rPolicy, spec)
-	if err != nil {
-		return fmt.Errorf("failed to validate policy: %w", err)
-	}
-	return nil
+	return plugin.ValidatePluginPolicy(policyDoc, spec)
 }
 
 func (p *Plugin) GetRecipeSpecification() (*rtypes.RecipeSchema, error) {
+	cfg, err := plugin.RecipeConfiguration(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			types.PolicyTarget: map[string]any{
+				"type": "string",
+			},
+			types.PolicyDenominator: map[string]any{
+				"type": "int",
+			},
+		},
+		"required": []any{
+			types.PolicyTarget,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to build pb recipe config: %w", err)
+	}
+
 	return &rtypes.RecipeSchema{
-		Version:         1, // Schema version
-		ScheduleVersion: 1, // Schedule specification version
-		// TODO: configure
-		PluginId:      string(vtypes.PluginVultisigCopytrader_0000),
+		Version:       1, // Schema version
+		PluginId:      "vultisig-copytrader-0000",
 		PluginName:    "Copy trading plugin",
 		PluginVersion: 1, // Convert from "0.1.0" to int32
 		SupportedResources: []*rtypes.ResourcePattern{
 			{
 				ResourcePath: &rtypes.ResourcePath{
 					ChainId:    "ethereum",
-					ProtocolId: "uniswapv2_router",
+					ProtocolId: "uniswapV2_router",
 					FunctionId: "swapExactTokensForTokens",
-					Full:       "ethereum.uniswapv2_router.swapExactTokensForTokens",
+					Full:       "ethereum.uniswapV2_router.swapExactTokensForTokens",
 				},
 				ParameterCapabilities: []*rtypes.ParameterConstraintCapability{
 					{
-						ParameterName: "aim",
-						SupportedTypes: []rtypes.ConstraintType{
-							rtypes.ConstraintType_CONSTRAINT_TYPE_FIXED,
-							rtypes.ConstraintType_CONSTRAINT_TYPE_WHITELIST,
-						},
-						Required: true,
+						ParameterName:  "amountIn",
+						SupportedTypes: rtypes.ConstraintType_CONSTRAINT_TYPE_FIXED,
+						Required:       true,
 					},
 					{
-						ParameterName: "source_token",
-						SupportedTypes: []rtypes.ConstraintType{
-							rtypes.ConstraintType_CONSTRAINT_TYPE_FIXED,
-							rtypes.ConstraintType_CONSTRAINT_TYPE_WHITELIST,
-						},
-						Required: true,
+						ParameterName:  "amountOutMin",
+						SupportedTypes: rtypes.ConstraintType_CONSTRAINT_TYPE_ANY,
+						Required:       true,
 					},
 					{
-						ParameterName: "destination_token",
-						SupportedTypes: []rtypes.ConstraintType{
-							rtypes.ConstraintType_CONSTRAINT_TYPE_FIXED,
-							rtypes.ConstraintType_CONSTRAINT_TYPE_WHITELIST,
-						},
-						Required: true,
+						ParameterName:  "path",
+						SupportedTypes: rtypes.ConstraintType_CONSTRAINT_TYPE_ANY,
+						Required:       true,
 					},
 					{
-						ParameterName: "amount",
-						SupportedTypes: []rtypes.ConstraintType{
-							rtypes.ConstraintType_CONSTRAINT_TYPE_FIXED,
-							rtypes.ConstraintType_CONSTRAINT_TYPE_MAX,
-							rtypes.ConstraintType_CONSTRAINT_TYPE_RANGE,
-						},
-						Required: true,
+						ParameterName:  "to",
+						SupportedTypes: rtypes.ConstraintType_CONSTRAINT_TYPE_FIXED,
+						Required:       true,
+					},
+					{
+						ParameterName:  "deadline",
+						SupportedTypes: rtypes.ConstraintType_CONSTRAINT_TYPE_ANY,
+						Required:       true,
 					},
 				},
 				Required: true,
+				Target:   rtypes.TargetType_TARGET_TYPE_ADDRESS,
 			},
 		},
+		Configuration: cfg,
 		Requirements: &rtypes.PluginRequirements{
 			MinVultisigVersion: 1,
 			SupportedChains:    []string{"ethereum"},
 		},
 	}, nil
+}
+
+func (p *Plugin) Suggest(configuration map[string]any) (*rtypes.PolicySuggest, error) {
+	//TODO implement me
+	return nil, errors.New("not implemented")
 }

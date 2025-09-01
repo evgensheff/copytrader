@@ -7,17 +7,17 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
-	"github.com/vultisig/plugin/storage"
 	"github.com/vultisig/recipes/sdk/evm"
-	"github.com/vultisig/verifier/common"
 	"github.com/vultisig/verifier/plugin"
-	"github.com/vultisig/verifier/tx_indexer"
+	"github.com/vultisig/verifier/plugin/keysign"
+	"github.com/vultisig/verifier/plugin/tx_indexer"
 	"github.com/vultisig/verifier/vault"
+	vgcommon "github.com/vultisig/vultisig-go/common"
 
-	"copytrader/internal/keysign"
+	"github.com/vultisig/copytrading/internal/storage"
 )
 
-var _ plugin.Plugin = (*Plugin)(nil)
+var _ plugin.Spec = (*Plugin)(nil)
 
 type Plugin struct {
 	db                    storage.DatabaseStorage
@@ -30,6 +30,7 @@ type Plugin struct {
 	vaultStorage          vault.Storage
 	vaultEncryptionSecret string
 	blockID               uint64
+	queue                 *WatcherQueue
 }
 
 func NewPlugin(
@@ -40,25 +41,28 @@ func NewPlugin(
 	txIndexerService *tx_indexer.Service,
 	client *asynq.Client,
 	vaultEncryptionSecret string,
+	queue *WatcherQueue,
+	fromBlock uint64,
 ) (*Plugin, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database storage cannot be nil")
 	}
 
 	var (
-		eth          *evm.SDK
-		currentBlock uint64
+		eth *evm.SDK
 	)
 	if ethRpc != nil {
-		ethEvmChainID, err := common.Ethereum.EvmID()
+		ethEvmChainID, err := vgcommon.Ethereum.EvmID()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get Ethereum EVM ID: %w", err)
 		}
 		eth = evm.NewSDK(ethEvmChainID, ethRpc, ethRpc.Client())
 
-		currentBlock, err = ethRpc.BlockNumber(context.Background())
-		if err != nil {
-			return nil, fmt.Errorf("failed to get block: %w", err)
+		if fromBlock == 0 {
+			fromBlock, err = ethRpc.BlockNumber(context.Background())
+			if err != nil {
+				return nil, fmt.Errorf("failed to get block: %w", err)
+			}
 		}
 	}
 
@@ -72,6 +76,7 @@ func NewPlugin(
 		client:                client,
 		vaultStorage:          vaultStorage,
 		vaultEncryptionSecret: vaultEncryptionSecret,
-		blockID:               currentBlock,
+		blockID:               fromBlock,
+		queue:                 queue,
 	}, nil
 }
